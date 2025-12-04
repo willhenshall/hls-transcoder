@@ -258,3 +258,54 @@ export function cleanupOldJobs(maxAgeMinutes) {
     }
   }
 }
+
+/**
+ * Synchronous transcode for single file - returns HLS files directly
+ * Used for server-to-server API integration
+ */
+export async function transcodeSync(jobId, file) {
+  const jobDir = path.join(TEMP_DIR, jobId);
+  
+  // Ensure job directory exists
+  if (!fs.existsSync(jobDir)) {
+    fs.mkdirSync(jobDir, { recursive: true });
+  }
+  
+  console.log(`[Job ${jobId}] Sync transcode: ${file.originalName}`);
+  
+  try {
+    const result = await transcodeFile(file.path, jobDir, file.originalName);
+    
+    // Read all HLS files
+    const hlsFiles = [];
+    const hlsDir = path.join(jobDir, result.hlsFolder);
+    const fileNames = fs.readdirSync(hlsDir);
+    
+    for (const fileName of fileNames) {
+      const filePath = path.join(hlsDir, fileName);
+      const stat = fs.statSync(filePath);
+      
+      hlsFiles.push({
+        name: fileName,
+        path: filePath,
+        size: stat.size
+      });
+    }
+    
+    console.log(`[Job ${jobId}] Sync transcode success: ${hlsFiles.length} files`);
+    
+    return {
+      success: true,
+      hlsFolder: result.hlsFolder,
+      segmentCount: result.segmentCount,
+      files: hlsFiles
+    };
+    
+  } catch (error) {
+    console.error(`[Job ${jobId}] Sync transcode failed:`, error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}

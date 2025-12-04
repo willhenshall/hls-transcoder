@@ -176,6 +176,83 @@ app.delete('/job/:jobId', (req, res) => {
   }
 });
 
+// CORS middleware for cross-origin requests from Focus Music app
+app.use('/api/transcode-sync', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, x-auth-password');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// Synchronous transcode endpoint - accepts MP3, returns HLS files as base64
+// This is the server-to-server API for Focus Music app integration
+app.post('/api/transcode-sync', authMiddleware, upload.single('file'), async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const jobId = req.jobId;
+    const file = {
+      originalName: req.file.originalname,
+      path: req.file.path,
+      size: req.file.size
+    };
+
+    console.log(`[${jobId}] Sync transcode: ${file.originalName}`);
+
+    // Transcode synchronously
+    const { transcodeSync } = await import('./transcode.js');
+    const result = await transcodeSync(jobId, file);
+
+    if (!result.success) {
+      return res.status(500).json({ 
+        error: result.error || 'Transcoding failed',
+        jobId 
+      });
+    }
+
+    // Read HLS files and encode as base64
+    const hlsFiles = [];
+    for (const hlsFile of result.files) {
+      const fileData = fs.readFileSync(hlsFile.path);
+      hlsFiles.push({
+        name: hlsFile.name,
+        size: hlsFile.size,
+        contentType: hlsFile.name.endsWith('.m3u8') 
+          ? 'application/vnd.apple.mpegurl' 
+          : 'video/mp2t',
+        data: fileData.toString('base64')
+      });
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`[${jobId}] Sync transcode complete: ${hlsFiles.length} files in ${duration}ms`);
+
+    // Cleanup job files after sending response
+    setTimeout(() => cleanupJob(jobId), 1000);
+
+    res.json({
+      success: true,
+      jobId,
+      originalFileName: file.originalName,
+      hlsFolder: result.hlsFolder,
+      segmentCount: result.segmentCount,
+      files: hlsFiles,
+      transcodeDurationMs: duration
+    });
+
+  } catch (error) {
+    console.error('Sync transcode error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Cleanup old jobs periodically
 setInterval(() => {
   cleanupOldJobs(JOB_CLEANUP_MINUTES);
