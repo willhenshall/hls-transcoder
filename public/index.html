@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HLS Transcoder - Focus Music</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🎵 HLS Transcoder</h1>
+      <p class="subtitle">Convert MP3 files to HLS streaming format</p>
+    </header>
+
+    <!-- Upload Section -->
+    <section id="upload-section" class="card">
+      <div id="drop-zone" class="drop-zone">
+        <div class="drop-zone-content">
+          <span class="drop-icon">📁</span>
+          <p class="drop-text">Drag & drop MP3 files here</p>
+          <p class="drop-subtext">or click to browse</p>
+          <input type="file" id="file-input" accept=".mp3,audio/mpeg" multiple hidden>
+        </div>
+      </div>
+
+      <div id="file-list" class="file-list hidden">
+        <h3>Selected Files</h3>
+        <ul id="selected-files"></ul>
+        <div class="file-actions">
+          <button id="clear-btn" class="btn btn-secondary">Clear</button>
+          <button id="transcode-btn" class="btn btn-primary">Transcode to HLS</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Progress Section -->
+    <section id="progress-section" class="card hidden">
+      <h3>Transcoding Progress</h3>
+      <div class="progress-container">
+        <div class="progress-bar">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <p id="progress-text" class="progress-text">Preparing...</p>
+      </div>
+      
+      <div id="file-progress" class="file-progress"></div>
+    </section>
+
+    <!-- Result Section -->
+    <section id="result-section" class="card hidden">
+      <div id="success-result" class="result-content hidden">
+        <span class="result-icon">✅</span>
+        <h3>Transcoding Complete!</h3>
+        <p id="result-summary"></p>
+        <button id="download-btn" class="btn btn-primary btn-large">
+          📦 Download HLS Files (ZIP)
+        </button>
+        <button id="new-job-btn" class="btn btn-secondary">Start New Job</button>
+      </div>
+      
+      <div id="error-result" class="result-content hidden">
+        <span class="result-icon">❌</span>
+        <h3>Transcoding Failed</h3>
+        <p id="error-message"></p>
+        <button id="retry-btn" class="btn btn-primary">Try Again</button>
+      </div>
+    </section>
+
+    <!-- Info Section -->
+    <section class="card info-card">
+      <h3>HLS Format Specifications</h3>
+      <div class="specs-grid">
+        <div class="spec">
+          <span class="spec-label">Segment Duration</span>
+          <span class="spec-value">10 seconds</span>
+        </div>
+        <div class="spec">
+          <span class="spec-label">Audio Codec</span>
+          <span class="spec-value">AAC</span>
+        </div>
+        <div class="spec">
+          <span class="spec-label">Bitrate</span>
+          <span class="spec-value">256 kbps</span>
+        </div>
+        <div class="spec">
+          <span class="spec-label">Sample Rate</span>
+          <span class="spec-value">44100 Hz</span>
+        </div>
+        <div class="spec">
+          <span class="spec-label">Channels</span>
+          <span class="spec-value">Stereo</span>
+        </div>
+        <div class="spec">
+          <span class="spec-label">Output</span>
+          <span class="spec-value">master.m3u8 + segments</span>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <p>Focus Music HLS Transcoder • For internal use only</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
