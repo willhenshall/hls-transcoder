@@ -65,8 +65,8 @@ const upload = multer({
   }
 });
 
-// Middleware to generate job ID before upload
-app.use('/transcode', (req, res, next) => {
+// Middleware to generate job ID before upload (for all transcode endpoints)
+app.use(['/transcode', '/api/transcode-sync'], (req, res, next) => {
   req.jobId = `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   next();
 });
