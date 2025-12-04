@@ -11,6 +11,19 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Global CORS middleware - allow requests from any origin
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-auth-password');
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // Configuration
 const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || '500', 10);
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD || '';
@@ -174,17 +187,6 @@ app.delete('/job/:jobId', (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-});
-
-// CORS middleware for cross-origin requests from Focus Music app
-app.use('/api/transcode-sync', (req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, x-auth-password');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
 });
 
 // Synchronous transcode endpoint - accepts MP3, returns HLS files as base64
