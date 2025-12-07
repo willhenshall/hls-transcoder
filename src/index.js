@@ -3,13 +3,14 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { transcode, getJobStatus, cleanupJob, cleanupOldJobs } from './transcode.js';
+import { transcode, getJobStatus, cleanupJob, cleanupOldJobs, BITRATE_LADDER } from './transcode.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const VERSION = '2.0.0';
 
 // Global CORS middleware - allow requests from any origin
 app.use((req, res, next) => {
@@ -17,7 +18,6 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-auth-password');
   
-  // Handle preflight requests
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -45,7 +45,6 @@ const storage = multer.diskStorage({
     cb(null, jobDir);
   },
   filename: (req, file, cb) => {
-    // Preserve original filename
     cb(null, file.originalname);
   }
 });
@@ -56,7 +55,6 @@ const upload = multer({
     fileSize: MAX_FILE_SIZE_MB * 1024 * 1024,
   },
   fileFilter: (req, file, cb) => {
-    // Only accept MP3 files
     if (file.mimetype === 'audio/mpeg' || file.originalname.toLowerCase().endsWith('.mp3')) {
       cb(null, true);
     } else {
@@ -65,7 +63,7 @@ const upload = multer({
   }
 });
 
-// Middleware to generate job ID before upload (for all transcode endpoints)
+// Middleware to generate job ID before upload
 app.use(['/transcode', '/api/transcode-sync'], (req, res, next) => {
   req.jobId = `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   next();
@@ -88,27 +86,34 @@ const authMiddleware = (req, res, next) => {
 // Serve static files
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Health check endpoint
+// Health check endpoint - updated for v2.0
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ 
+    status: 'healthy',
+    version: VERSION,
+    ffmpeg: true,
+    bitrateLadder: BITRATE_LADDER.map(v => `${v.name}:${v.bitrate}`).join(', '),
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Get service info
+// Get service info - updated for 4-bitrate ladder
 app.get('/api/info', (req, res) => {
   res.json({
+    version: VERSION,
     maxFileSizeMB: MAX_FILE_SIZE_MB,
     passwordRequired: !!AUTH_PASSWORD,
     hlsConfig: {
-      segmentDuration: 10,
+      segmentDuration: 6,
       audioCodec: 'aac',
-      audioBitrate: '256k',
       sampleRate: 44100,
-      channels: 2
+      channels: 2,
+      bitrateLadder: BITRATE_LADDER
     }
   });
 });
 
-// Upload and transcode endpoint
+// Upload and transcode endpoint (async)
 app.post('/transcode', authMiddleware, upload.array('files', 50), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
@@ -122,9 +127,8 @@ app.post('/transcode', authMiddleware, upload.array('files', 50), async (req, re
       size: f.size
     }));
 
-    console.log(`[${jobId}] Starting transcode job with ${files.length} file(s)`);
+    console.log(`[${jobId}] Starting 4-bitrate transcode job with ${files.length} file(s)`);
 
-    // Start transcoding in background
     transcode(jobId, files).catch(err => {
       console.error(`[${jobId}] Transcode error:`, err);
     });
@@ -133,7 +137,7 @@ app.post('/transcode', authMiddleware, upload.array('files', 50), async (req, re
       jobId,
       files: files.map(f => f.originalName),
       status: 'processing',
-      message: 'Transcoding started. Poll /status/:jobId for progress.'
+      message: 'Transcoding 4-bitrate HLS ladder. Poll /status/:jobId for progress.'
     });
   } catch (error) {
     console.error('Upload error:', error);
@@ -189,7 +193,7 @@ app.delete('/job/:jobId', (req, res) => {
   }
 });
 
-// Synchronous transcode endpoint - accepts MP3, returns HLS files as base64
+// Synchronous transcode endpoint - returns 4-bitrate HLS ladder as base64
 // This is the server-to-server API for Focus Music app integration
 app.post('/api/transcode-sync', authMiddleware, upload.single('file'), async (req, res) => {
   const startTime = Date.now();
@@ -206,9 +210,8 @@ app.post('/api/transcode-sync', authMiddleware, upload.single('file'), async (re
       size: req.file.size
     };
 
-    console.log(`[${jobId}] Sync transcode: ${file.originalName}`);
+    console.log(`[${jobId}] Sync 4-bitrate transcode: ${file.originalName}`);
 
-    // Transcode synchronously
     const { transcodeSync } = await import('./transcode.js');
     const result = await transcodeSync(jobId, file);
 
@@ -219,12 +222,12 @@ app.post('/api/transcode-sync', authMiddleware, upload.single('file'), async (re
       });
     }
 
-    // Read HLS files and encode as base64
+    // Read HLS files and encode as base64 (with nested paths)
     const hlsFiles = [];
     for (const hlsFile of result.files) {
       const fileData = fs.readFileSync(hlsFile.path);
       hlsFiles.push({
-        name: hlsFile.name,
+        name: hlsFile.name,  // Now includes path like "low/index.m3u8"
         size: hlsFile.size,
         contentType: hlsFile.name.endsWith('.m3u8') 
           ? 'application/vnd.apple.mpegurl' 
@@ -246,7 +249,14 @@ app.post('/api/transcode-sync', authMiddleware, upload.single('file'), async (re
       hlsFolder: result.hlsFolder,
       segmentCount: result.segmentCount,
       files: hlsFiles,
-      transcodeDurationMs: duration
+      transcodeDurationMs: duration,
+      isMultiBitrate: true,
+      variants: result.variants || BITRATE_LADDER.map(v => ({
+        name: v.name,
+        bitrate: parseInt(v.bitrate),
+        bandwidth: v.bandwidth,
+        segmentCount: Math.floor(result.segmentCount / 4)
+      }))
     });
 
   } catch (error) {
@@ -258,7 +268,7 @@ app.post('/api/transcode-sync', authMiddleware, upload.single('file'), async (re
 // Cleanup old jobs periodically
 setInterval(() => {
   cleanupOldJobs(JOB_CLEANUP_MINUTES);
-}, 5 * 60 * 1000); // Check every 5 minutes
+}, 5 * 60 * 1000);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -277,13 +287,14 @@ app.use((err, req, res, next) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`
-╔════════════════════════════════════════════════════════════╗
-║           HLS Transcoding Service                          ║
-╠════════════════════════════════════════════════════════════╣
-║  Port: ${PORT}                                              ║
-║  Max file size: ${MAX_FILE_SIZE_MB}MB                                 ║
-║  Password protection: ${AUTH_PASSWORD ? 'Enabled' : 'Disabled'}                        ║
-║  Job cleanup: ${JOB_CLEANUP_MINUTES} minutes                               ║
-╚════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════╗
+║      HLS Transcoder Service v${VERSION} (4-Bitrate Ladder)             ║
+╠════════════════════════════════════════════════════════════════════╣
+║  Port: ${PORT}                                                         ║
+║  Bitrate ladder: ${BITRATE_LADDER.map(v => v.bitrate).join(' / ')}                    ║
+║  Max file size: ${MAX_FILE_SIZE_MB}MB                                            ║
+║  Password protection: ${AUTH_PASSWORD ? 'Enabled' : 'Disabled'}                                   ║
+║  Job cleanup: ${JOB_CLEANUP_MINUTES} minutes                                          ║
+╚════════════════════════════════════════════════════════════════════╝
   `);
 });

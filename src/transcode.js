@@ -8,11 +8,18 @@ const TEMP_DIR = '/tmp/hls-jobs';
 // In-memory job status tracking
 const jobs = new Map();
 
-// HLS Configuration - matches Focus Music requirements
+// 4-Bitrate Ladder Configuration
+const BITRATE_LADDER = [
+  { name: 'low', bitrate: '32k', bandwidth: 48000 },
+  { name: 'medium', bitrate: '64k', bandwidth: 96000 },
+  { name: 'high', bitrate: '96k', bandwidth: 144000 },
+  { name: 'premium', bitrate: '128k', bandwidth: 192000 },
+];
+
+// HLS Configuration
 const HLS_CONFIG = {
-  segmentDuration: 10,      // seconds
+  segmentDuration: 6,       // seconds (optimized for mobile)
   audioCodec: 'aac',
-  audioBitrate: '256k',
   sampleRate: 44100,
   channels: 2,
 };
@@ -66,38 +73,28 @@ export function getJobStatus(jobId) {
 }
 
 /**
- * Transcode a single MP3 file to HLS
+ * Transcode a single MP3 file to a single HLS variant
  */
-function transcodeFile(inputPath, outputDir, fileName) {
+function transcodeVariant(inputPath, outputDir, bitrate) {
   return new Promise((resolve, reject) => {
-    const baseName = path.basename(fileName, '.mp3');
-    const hlsDir = path.join(outputDir, baseName);
-    
-    // Create HLS output directory
-    if (!fs.existsSync(hlsDir)) {
-      fs.mkdirSync(hlsDir, { recursive: true });
-    }
-    
-    const masterPlaylist = path.join(hlsDir, 'master.m3u8');
-    const segmentPattern = path.join(hlsDir, 'segment_%03d.ts');
+    const indexFile = path.join(outputDir, 'index.m3u8');
+    const segmentPattern = path.join(outputDir, 'segment_%03d.ts');
     
     const ffmpegArgs = [
       '-i', inputPath,
       '-c:a', HLS_CONFIG.audioCodec,
-      '-b:a', HLS_CONFIG.audioBitrate,
+      '-b:a', bitrate,
       '-ar', HLS_CONFIG.sampleRate.toString(),
       '-ac', HLS_CONFIG.channels.toString(),
+      '-f', 'hls',
       '-hls_time', HLS_CONFIG.segmentDuration.toString(),
-      '-hls_list_size', '0',
+      '-hls_playlist_type', 'vod',
       '-hls_segment_filename', segmentPattern,
-      '-hls_flags', 'independent_segments',
       '-y',
-      masterPlaylist
+      indexFile
     ];
     
-    console.log(`[FFmpeg] Transcoding: ${fileName}`);
-    
-    const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+    const ffmpeg = spawn('ffmpeg', ffmpegArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
     
     let stderr = '';
     ffmpeg.stderr.on('data', (data) => {
@@ -106,29 +103,94 @@ function transcodeFile(inputPath, outputDir, fileName) {
     
     ffmpeg.on('close', (code) => {
       if (code === 0) {
-        // Count segments
-        const files = fs.readdirSync(hlsDir);
+        const files = fs.readdirSync(outputDir);
         const segmentCount = files.filter(f => f.endsWith('.ts')).length;
-        
-        console.log(`[FFmpeg] Completed: ${fileName} (${segmentCount} segments)`);
-        
-        resolve({
-          success: true,
-          hlsFolder: baseName,
-          segmentCount,
-          hlsDir
-        });
+        resolve({ success: true, segmentCount });
       } else {
-        console.error(`[FFmpeg] Failed: ${fileName}`, stderr.slice(-500));
         reject(new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-200)}`));
       }
     });
     
     ffmpeg.on('error', (err) => {
-      console.error(`[FFmpeg] Error: ${fileName}`, err);
       reject(err);
     });
   });
+}
+
+/**
+ * Generate the master playlist referencing all variants
+ */
+function generateMasterPlaylist() {
+  return `#EXTM3U
+#EXT-X-VERSION:3
+
+# 32 kbps LOW
+#EXT-X-STREAM-INF:BANDWIDTH=48000,CODECS="mp4a.40.2"
+low/index.m3u8
+
+# 64 kbps MEDIUM
+#EXT-X-STREAM-INF:BANDWIDTH=96000,CODECS="mp4a.40.2"
+medium/index.m3u8
+
+# 96 kbps HIGH
+#EXT-X-STREAM-INF:BANDWIDTH=144000,CODECS="mp4a.40.2"
+high/index.m3u8
+
+# 128 kbps PREMIUM
+#EXT-X-STREAM-INF:BANDWIDTH=192000,CODECS="mp4a.40.2"
+premium/index.m3u8
+`;
+}
+
+/**
+ * Transcode a single MP3 file to 4-bitrate HLS ladder
+ */
+async function transcodeFile(inputPath, outputDir, fileName) {
+  const baseName = path.basename(fileName, '.mp3');
+  const hlsDir = path.join(outputDir, baseName);
+  
+  // Create directories for each variant
+  for (const variant of BITRATE_LADDER) {
+    fs.mkdirSync(path.join(hlsDir, variant.name), { recursive: true });
+  }
+  
+  console.log(`[FFmpeg] Transcoding 4-bitrate ladder: ${fileName}`);
+  
+  const variants = [];
+  let totalSegments = 0;
+  
+  // Transcode each variant
+  for (const variant of BITRATE_LADDER) {
+    const variantDir = path.join(hlsDir, variant.name);
+    console.log(`[FFmpeg]   ${variant.name} (${variant.bitrate})...`);
+    
+    const result = await transcodeVariant(inputPath, variantDir, variant.bitrate);
+    
+    variants.push({
+      name: variant.name,
+      bitrate: parseInt(variant.bitrate),
+      bandwidth: variant.bandwidth,
+      segmentCount: result.segmentCount
+    });
+    
+    totalSegments += result.segmentCount;
+    console.log(`[FFmpeg]   ✓ ${variant.name}: ${result.segmentCount} segments`);
+  }
+  
+  // Generate master playlist
+  const masterContent = generateMasterPlaylist();
+  fs.writeFileSync(path.join(hlsDir, 'master.m3u8'), masterContent);
+  
+  console.log(`[FFmpeg] Completed: ${fileName} (${totalSegments} total segments across 4 variants)`);
+  
+  return {
+    success: true,
+    hlsFolder: baseName,
+    segmentCount: totalSegments,
+    hlsDir,
+    variants,
+    isMultiBitrate: true
+  };
 }
 
 /**
@@ -158,7 +220,6 @@ function createZipArchive(jobId, outputDir) {
       const stat = fs.statSync(itemPath);
       
       if (stat.isDirectory() && item !== 'uploads') {
-        // Add the HLS folder
         archive.directory(itemPath, item);
       }
     }
@@ -174,10 +235,9 @@ export async function transcode(jobId, files) {
   const job = initJob(jobId, files);
   const jobDir = path.join(TEMP_DIR, jobId);
   
-  console.log(`[Job ${jobId}] Starting transcode of ${files.length} file(s)`);
+  console.log(`[Job ${jobId}] Starting 4-bitrate ladder transcode of ${files.length} file(s)`);
   
   try {
-    // Process each file
     for (const file of files) {
       updateFileStatus(jobId, file.originalName, { status: 'processing' });
       
@@ -199,11 +259,9 @@ export async function transcode(jobId, files) {
       }
     }
     
-    // Check if any files succeeded
     const successfulFiles = job.files.filter(f => f.status === 'completed');
     
     if (successfulFiles.length > 0) {
-      // Create ZIP of all HLS folders
       console.log(`[Job ${jobId}] Creating ZIP archive...`);
       const zipPath = await createZipArchive(jobId, jobDir);
       
@@ -260,45 +318,62 @@ export function cleanupOldJobs(maxAgeMinutes) {
 }
 
 /**
+ * Collect all HLS files from output directory (recursive)
+ */
+function collectHLSFiles(hlsDir) {
+  const files = [];
+  
+  function readDir(dir, prefix = '') {
+    const items = fs.readdirSync(dir);
+    for (const item of items) {
+      const fullPath = path.join(dir, item);
+      const relativePath = prefix ? `${prefix}/${item}` : item;
+      const stat = fs.statSync(fullPath);
+      
+      if (stat.isDirectory()) {
+        readDir(fullPath, relativePath);
+      } else {
+        files.push({
+          name: relativePath,
+          path: fullPath,
+          size: stat.size
+        });
+      }
+    }
+  }
+  
+  readDir(hlsDir);
+  return files;
+}
+
+/**
  * Synchronous transcode for single file - returns HLS files directly
- * Used for server-to-server API integration
+ * Creates 4-bitrate ladder for ABR streaming
  */
 export async function transcodeSync(jobId, file) {
   const jobDir = path.join(TEMP_DIR, jobId);
   
-  // Ensure job directory exists
   if (!fs.existsSync(jobDir)) {
     fs.mkdirSync(jobDir, { recursive: true });
   }
   
-  console.log(`[Job ${jobId}] Sync transcode: ${file.originalName}`);
+  console.log(`[Job ${jobId}] Sync 4-bitrate transcode: ${file.originalName}`);
   
   try {
     const result = await transcodeFile(file.path, jobDir, file.originalName);
     
-    // Read all HLS files
-    const hlsFiles = [];
-    const hlsDir = path.join(jobDir, result.hlsFolder);
-    const fileNames = fs.readdirSync(hlsDir);
+    // Collect all HLS files (master + 4 variants with segments)
+    const hlsFiles = collectHLSFiles(result.hlsDir);
     
-    for (const fileName of fileNames) {
-      const filePath = path.join(hlsDir, fileName);
-      const stat = fs.statSync(filePath);
-      
-      hlsFiles.push({
-        name: fileName,
-        path: filePath,
-        size: stat.size
-      });
-    }
-    
-    console.log(`[Job ${jobId}] Sync transcode success: ${hlsFiles.length} files`);
+    console.log(`[Job ${jobId}] Sync transcode success: ${hlsFiles.length} files (4 variants)`);
     
     return {
       success: true,
       hlsFolder: result.hlsFolder,
       segmentCount: result.segmentCount,
-      files: hlsFiles
+      files: hlsFiles,
+      variants: result.variants,
+      isMultiBitrate: true
     };
     
   } catch (error) {
@@ -309,3 +384,6 @@ export async function transcodeSync(jobId, file) {
     };
   }
 }
+
+// Export bitrate ladder for health check
+export { BITRATE_LADDER };
